@@ -19,7 +19,7 @@ const DefaultViewPath = "app/views"
 // Config render config
 type Config struct {
 	ViewPaths       []string
-	DefaultLayout   string
+	Layout          string
 	FuncMapMaker    func(render *Render, request *http.Request, writer http.ResponseWriter) template.FuncMap
 	AssetFileSystem assetfs.Interface
 }
@@ -35,10 +35,6 @@ type Render struct {
 func New(config *Config, viewPaths ...string) *Render {
 	if config == nil {
 		config = &Config{}
-	}
-
-	if config.DefaultLayout == "" {
-		config.DefaultLayout = DefaultLayout
 	}
 
 	if config.AssetFileSystem == nil {
@@ -120,13 +116,13 @@ func (render *Render) Layout(name string) *Template {
 
 // Funcs set helper functions for template with default "application" layout.
 func (render *Render) Funcs(funcMap template.FuncMap) *Template {
-	tmpl := &Template{render: render, usingDefaultLayout: true}
+	tmpl := &Template{render: render}
 	return tmpl.Funcs(funcMap)
 }
 
 // Execute render template with default "application" layout.
 func (render *Render) Execute(name string, context interface{}, request *http.Request, writer http.ResponseWriter) error {
-	tmpl := &Template{render: render, usingDefaultLayout: true}
+	tmpl := &Template{render: render}
 	return tmpl.Execute(name, context, request, writer)
 }
 

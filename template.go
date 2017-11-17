@@ -4,17 +4,20 @@ import (
 	"bytes"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
+
+	"github.com/cryptix/go/logging"
+	"github.com/pkg/errors"
 )
 
 // Template template struct
 type Template struct {
-	render             *Render
-	layout             string
-	usingDefaultLayout bool
-	funcMap            template.FuncMap
+	render  *Render
+	layout  string
+	funcMap template.FuncMap
 }
 
 // FuncMap get func maps from tmpl
@@ -68,23 +71,21 @@ func (tmpl *Template) Render(templateName string, obj interface{}, request *http
 				}
 			}
 
-			if renderContent, err = tmpl.findTemplate(name); err == nil {
-				var partialTemplate *template.Template
-				result := bytes.NewBufferString("")
-				if partialTemplate, err = template.New(filepath.Base(name)).Funcs(funcMap).Parse(string(renderContent)); err == nil {
-					if err = partialTemplate.Execute(result, renderObj); err == nil {
-						return template.HTML(result.String()), err
-					}
-				}
-			} else {
-				err = fmt.Errorf("failed to find template: %v", name)
-			}
-
+			renderContent, err = tmpl.findTemplate(name)
 			if err != nil {
-				fmt.Println(err)
+				return "yieldFindErr", errors.Wrapf(err, "failed to find template: %v", templateName)
 			}
-
-			return "", err
+			var partialTemplate *template.Template
+			var result bytes.Buffer
+			partialTemplate, err = template.New(filepath.Base(name)).Funcs(funcMap).Parse(string(renderContent))
+			if err != nil {
+				return "yieldParseERR", err
+			}
+			err = partialTemplate.Execute(&result, renderObj)
+			if err != nil {
+				return "yieldExecERROR", err
+			}
+			return template.HTML(result.String()), nil
 		}
 	)
 
@@ -92,57 +93,62 @@ func (tmpl *Template) Render(templateName string, obj interface{}, request *http
 	funcMap["render"] = render
 	funcMap["yield"] = func() (template.HTML, error) { return render(templateName) }
 
-	layout := tmpl.layout
-	usingDefaultLayout := false
-
-	if layout == "" && tmpl.usingDefaultLayout {
-		usingDefaultLayout = true
-		layout = tmpl.render.DefaultLayout
+	if l := tmpl.render.Config.Layout; l != "" {
+		tmpl.layout = l
 	}
 
-	if layout != "" {
-		content, err = tmpl.findTemplate(filepath.Join("layouts", layout))
-		if err == nil {
-			if t, err = template.New("").Funcs(funcMap).Parse(string(content)); err == nil {
-				var tpl bytes.Buffer
-				if err = t.Execute(&tpl, obj); err == nil {
-					return template.HTML(tpl.String()), nil
-				}
-			}
-		} else if !usingDefaultLayout {
-			err = fmt.Errorf("Failed to render layout: '%v.tmpl', got error: %v", filepath.Join("layouts", tmpl.layout), err)
-			fmt.Println(err)
-			return template.HTML(""), err
+	if tmpl.layout != "" {
+		p := filepath.Join("layouts", tmpl.layout)
+		content, err = tmpl.findTemplate(p)
+		if err != nil {
+			return "findLayoutERR", errors.Wrapf(err, "render: Failed to find layout: %s", p)
 		}
-	}
 
-	if content, err = tmpl.findTemplate(templateName); err == nil {
-		if t, err = template.New("").Funcs(funcMap).Parse(string(content)); err == nil {
-			var tpl bytes.Buffer
-			if err = t.Execute(&tpl, obj); err == nil {
-				return template.HTML(tpl.String()), nil
-			}
+		t, err = template.New("").Funcs(funcMap).Parse(string(content))
+		if err != nil {
+			return "parseLayoutERR", errors.Wrapf(err, "render: Failed to parse layout: %s", p)
 		}
-	} else {
-		err = fmt.Errorf("failed to find template: %v", templateName)
+		var b bytes.Buffer
+		err = t.Execute(&b, obj)
+		if err != nil {
+			return "executeLayoutERR", errors.Wrapf(err, "render: failed to execute layout: %s", p)
+		}
+		return template.HTML(b.String()), nil
 	}
 
+	content, err = tmpl.findTemplate(templateName)
 	if err != nil {
-		fmt.Println(err)
+		return "findERR", errors.Wrapf(err, "failed to find template: %v", templateName)
 	}
-	return template.HTML(""), err
+	t, err = template.New("").Funcs(funcMap).Parse(string(content))
+	if err != nil {
+		return "parseERROR", errors.Wrapf(err, "render: failed to parse template:%s", templateName)
+	}
+	var tpl bytes.Buffer
+	err = t.Execute(&tpl, obj)
+	if err != nil {
+		return "executeERROR", errors.Wrapf(err, "render: failed to execute template:%s", templateName)
+	}
+	return template.HTML(tpl.String()), nil
 }
 
 // Execute execute tmpl
 func (tmpl *Template) Execute(templateName string, obj interface{}, req *http.Request, w http.ResponseWriter) error {
 	result, err := tmpl.Render(templateName, obj, req, w)
-	if err == nil {
-		if w.Header().Get("Content-Type") == "" {
-			w.Header().Set("Content-Type", "text/html")
-		}
-
-		_, err = w.Write([]byte(result))
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		// TODO: better error 500 template
+		fmt.Fprint(w, "Internal Server Error")
+		log := logging.FromContext(req.Context())
+		log.Log("event", "error", "where", "tmpl.Execute", "err", err)
+		return err
 	}
+
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "text/html")
+	}
+
+	_, err = io.Copy(w, bytes.NewReader([]byte(result)))
 	return err
 }
 
