@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"path/filepath"
 
+	"github.com/pkg/errors"
 	"github.com/qor/assetfs"
 	"github.com/qor/qor/utils"
 )
@@ -19,7 +20,7 @@ const DefaultViewPath = "app/views"
 // Config render config
 type Config struct {
 	ViewPaths       []string
-	DefaultLayout   string
+	Layout          string
 	FuncMapMaker    func(render *Render, request *http.Request, writer http.ResponseWriter) template.FuncMap
 	AssetFileSystem assetfs.Interface
 }
@@ -35,10 +36,6 @@ type Render struct {
 func New(config *Config, viewPaths ...string) *Render {
 	if config == nil {
 		config = &Config{}
-	}
-
-	if config.DefaultLayout == "" {
-		config.DefaultLayout = DefaultLayout
 	}
 
 	if config.AssetFileSystem == nil {
@@ -57,27 +54,36 @@ func New(config *Config, viewPaths ...string) *Render {
 }
 
 // RegisterViewPath register view path
-func (render *Render) RegisterViewPath(paths ...string) {
+func (render *Render) RegisterViewPath(paths ...string) error {
 	for _, pth := range paths {
 		if filepath.IsAbs(pth) {
 			render.ViewPaths = append(render.ViewPaths, pth)
-			render.AssetFileSystem.RegisterPath(pth)
+			if err := render.AssetFileSystem.RegisterPath(pth); err != nil {
+				return errors.Wrapf(err, "failed finding abs ViewPath:%s", pth)
+			}
 		} else {
 			if absPath, err := filepath.Abs(pth); err == nil && isExistingDir(absPath) {
 				render.ViewPaths = append(render.ViewPaths, absPath)
-				render.AssetFileSystem.RegisterPath(absPath)
+				if err := render.AssetFileSystem.RegisterPath(absPath); err != nil {
+					return errors.Wrapf(err, "failed finding isExists ViewPath:%s", pth)
+				}
 			} else if isExistingDir(filepath.Join(utils.AppRoot, "vendor", pth)) {
-				render.AssetFileSystem.RegisterPath(filepath.Join(utils.AppRoot, "vendor", pth))
+				if err := render.AssetFileSystem.RegisterPath(filepath.Join(utils.AppRoot, "vendor", pth)); err != nil {
+					return errors.Wrapf(err, "failed finding appRot/vendor ViewPath:%s", pth)
+				}
 			} else {
 				for _, gopath := range utils.GOPATH() {
 					if p := filepath.Join(gopath, "src", pth); isExistingDir(p) {
 						render.ViewPaths = append(render.ViewPaths, p)
-						render.AssetFileSystem.RegisterPath(p)
+						if err := render.AssetFileSystem.RegisterPath(p); err != nil {
+							return errors.Wrapf(err, "failed finding appRot/vendor ViewPath:%s", pth)
+						}
 					}
 				}
 			}
 		}
 	}
+	return nil
 }
 
 // PrependViewPath prepend view path
@@ -120,13 +126,13 @@ func (render *Render) Layout(name string) *Template {
 
 // Funcs set helper functions for template with default "application" layout.
 func (render *Render) Funcs(funcMap template.FuncMap) *Template {
-	tmpl := &Template{render: render, usingDefaultLayout: true}
+	tmpl := &Template{render: render}
 	return tmpl.Funcs(funcMap)
 }
 
 // Execute render template with default "application" layout.
 func (render *Render) Execute(name string, context interface{}, request *http.Request, writer http.ResponseWriter) error {
-	tmpl := &Template{render: render, usingDefaultLayout: true}
+	tmpl := &Template{render: render}
 	return tmpl.Execute(name, context, request, writer)
 }
 
